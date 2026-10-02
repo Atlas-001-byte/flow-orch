@@ -37,9 +37,18 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
     by_id = {task.id: task for task in tasks}
     lock = threading.Lock()  # 保护回调与 results 的串行可见性
 
-    def emit(event: str, task_id: str, attempt: int) -> None:
+    def emit(event: str, task_id: str, attempt: int, wait_seconds: Optional[float] = None) -> None:
         if callback is not None:
-            callback(CallbackEvent(event, task_id, attempt, _utc_now_iso()))
+            callback(CallbackEvent(event, task_id, attempt, _utc_now_iso(), wait_seconds))
+
+    def retry_wait_seconds(task: TaskDef, failed_attempt: int) -> float:
+        """第 failed_attempt 次失败后、下一次尝试前的实际等待秒数。"""
+        wait = task.retry_delay_seconds * (
+            task.retry_backoff_multiplier ** (failed_attempt - 1)
+        )
+        if task.max_retry_delay_seconds is not None:
+            wait = min(wait, task.max_retry_delay_seconds)
+        return wait
 
     def execute_task(task: TaskDef) -> TaskResult:
         """在工作线程中执行单个任务，含重试循环。"""
@@ -50,10 +59,11 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                 output = run_once(task, results)
             except TaskExecutionError as exc:
                 if attempt < task.max_attempts:
+                    wait_seconds = retry_wait_seconds(task, attempt)
                     with lock:
-                        emit("task_retrying", task.id, attempt)
-                    if task.retry_delay_seconds > 0:
-                        time.sleep(task.retry_delay_seconds)
+                        emit("task_retrying", task.id, attempt, wait_seconds)
+                    if wait_seconds > 0:
+                        time.sleep(wait_seconds)
                     continue
                 with lock:
                     emit("task_failed", task.id, attempt)

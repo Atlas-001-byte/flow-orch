@@ -58,7 +58,7 @@ def build_tasks(data: Any) -> list[TaskDef]:
             )
 
         depends_on = _validate_depends_on(task_id, raw.get("depends_on", []))
-        max_attempts, retry_delay = _validate_retry_policy(task_id, raw)
+        retry_policy = _validate_retry_policy(task_id, raw)
         args = _validate_args_type(task_id, raw.get("args", {}))
 
         tasks.append(
@@ -66,8 +66,10 @@ def build_tasks(data: Any) -> list[TaskDef]:
                 id=task_id,
                 task_type=task_type,
                 depends_on=tuple(depends_on),
-                max_attempts=max_attempts,
-                retry_delay_seconds=retry_delay,
+                max_attempts=retry_policy[0],
+                retry_delay_seconds=retry_policy[1],
+                retry_backoff_multiplier=retry_policy[2],
+                max_retry_delay_seconds=retry_policy[3],
                 args=args,
             )
         )
@@ -98,7 +100,7 @@ def _validate_depends_on(task_id: str, value: Any) -> list[str]:
     return deps
 
 
-def _validate_retry_policy(task_id: str, raw: dict) -> tuple[int, float]:
+def _validate_retry_policy(task_id: str, raw: dict) -> tuple[int, float, float, float | None]:
     max_attempts = raw.get("max_attempts", 1)
     # 仅接受整数次（1.0 这类浮点在 JSON 中若写为 1.0 也拒绝，避免歧义）。
     if not isinstance(max_attempts, int) or isinstance(max_attempts, bool):
@@ -123,7 +125,34 @@ def _validate_retry_policy(task_id: str, raw: dict) -> tuple[int, float]:
             "INVALID_RETRY_POLICY",
             f"任务 {task_id} 的 retry_delay_seconds 不能小于 0",
         )
-    return max_attempts, float(retry_delay)
+
+    multiplier = raw.get("retry_backoff_multiplier", 1)
+    if not _is_real_number(multiplier) or not math.isfinite(multiplier):
+        raise _err(
+            "INVALID_RETRY_POLICY",
+            f"任务 {task_id} 的 retry_backoff_multiplier 必须是有限数值",
+        )
+    if multiplier < 1:
+        raise _err(
+            "INVALID_RETRY_POLICY",
+            f"任务 {task_id} 的 retry_backoff_multiplier 不能小于 1",
+        )
+
+    max_delay = raw.get("max_retry_delay_seconds")
+    if max_delay is not None:
+        if not _is_real_number(max_delay) or not math.isfinite(max_delay):
+            raise _err(
+                "INVALID_RETRY_POLICY",
+                f"任务 {task_id} 的 max_retry_delay_seconds 必须是有限数值",
+            )
+        if max_delay < 0:
+            raise _err(
+                "INVALID_RETRY_POLICY",
+                f"任务 {task_id} 的 max_retry_delay_seconds 不能小于 0",
+            )
+        max_delay = float(max_delay)
+
+    return max_attempts, float(retry_delay), float(multiplier), max_delay
 
 
 def _validate_args_type(task_id: str, value: Any) -> dict:

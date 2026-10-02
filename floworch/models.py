@@ -14,6 +14,10 @@ class TaskDef:
     max_attempts: int
     retry_delay_seconds: float
     args: dict[str, Any]
+    # 指数退避：第 n 次失败后等待 retry_delay_seconds * multiplier^(n-1)。
+    retry_backoff_multiplier: float = 1.0
+    # 单次等待上限；None 表示不截断。
+    max_retry_delay_seconds: Optional[float] = None
 
 
 @dataclass
@@ -45,12 +49,15 @@ class CallbackEvent:
 
     event 为 task_started、task_retrying、task_succeeded、task_failed
     或 task_skipped；timestamp 为 UTC ISO 8601 字符串。
+    wait_seconds 仅 task_retrying 携带，为本次重试前实际等待的秒数，
+    其余事件为 None。
     """
 
     event: str
     task_id: str
     attempt: int
     timestamp: str
+    wait_seconds: Optional[float] = None
 
 
 # 回调函数：接收一个 CallbackEvent，无返回值。
