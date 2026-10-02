@@ -1,7 +1,7 @@
 """工作流定义校验：结构、重试策略、依赖关系与参数。"""
 
 import math
-from typing import Any
+from typing import Any, Optional
 
 from .errors import WorkflowDefinitionError
 from .models import TaskDef
@@ -58,7 +58,12 @@ def build_tasks(data: Any) -> list[TaskDef]:
             )
 
         depends_on = _validate_depends_on(task_id, raw.get("depends_on", []))
-        max_attempts, retry_delay = _validate_retry_policy(task_id, raw)
+        (
+            max_attempts,
+            retry_delay,
+            backoff_multiplier,
+            max_retry_delay,
+        ) = _validate_retry_policy(task_id, raw)
         args = _validate_args_type(task_id, raw.get("args", {}))
 
         tasks.append(
@@ -69,6 +74,8 @@ def build_tasks(data: Any) -> list[TaskDef]:
                 max_attempts=max_attempts,
                 retry_delay_seconds=retry_delay,
                 args=args,
+                retry_backoff_multiplier=backoff_multiplier,
+                max_retry_delay_seconds=max_retry_delay,
             )
         )
 
@@ -98,7 +105,9 @@ def _validate_depends_on(task_id: str, value: Any) -> list[str]:
     return deps
 
 
-def _validate_retry_policy(task_id: str, raw: dict) -> tuple[int, float]:
+def _validate_retry_policy(
+    task_id: str, raw: dict
+) -> tuple[int, float, float, Optional[float]]:
     max_attempts = raw.get("max_attempts", 1)
     # 仅接受整数次（1.0 这类浮点在 JSON 中若写为 1.0 也拒绝，避免歧义）。
     if not isinstance(max_attempts, int) or isinstance(max_attempts, bool):
@@ -123,7 +132,42 @@ def _validate_retry_policy(task_id: str, raw: dict) -> tuple[int, float]:
             "INVALID_RETRY_POLICY",
             f"任务 {task_id} 的 retry_delay_seconds 不能小于 0",
         )
-    return max_attempts, float(retry_delay)
+
+    # 省略 multiplier 时默认 1（固定等待，与历史行为完全一致）。
+    backoff_multiplier = raw.get("retry_backoff_multiplier", 1)
+    if not _is_real_number(backoff_multiplier) or not math.isfinite(backoff_multiplier):
+        raise _err(
+            "INVALID_RETRY_POLICY",
+            f"任务 {task_id} 的 retry_backoff_multiplier 必须是有限数值",
+        )
+    if backoff_multiplier < 1:
+        raise _err(
+            "INVALID_RETRY_POLICY",
+            f"任务 {task_id} 的 retry_backoff_multiplier 不能小于 1",
+        )
+
+    # 省略上限时为 None，退避结果不截断。
+    max_retry_delay: Optional[float] = None
+    if "max_retry_delay_seconds" in raw:
+        max_retry_delay = raw["max_retry_delay_seconds"]
+        if not _is_real_number(max_retry_delay) or not math.isfinite(max_retry_delay):
+            raise _err(
+                "INVALID_RETRY_POLICY",
+                f"任务 {task_id} 的 max_retry_delay_seconds 必须是有限数值",
+            )
+        if max_retry_delay < 0:
+            raise _err(
+                "INVALID_RETRY_POLICY",
+                f"任务 {task_id} 的 max_retry_delay_seconds 不能小于 0",
+            )
+        max_retry_delay = float(max_retry_delay)
+
+    return (
+        max_attempts,
+        float(retry_delay),
+        float(backoff_multiplier),
+        max_retry_delay,
+    )
 
 
 def _validate_args_type(task_id: str, value: Any) -> dict:

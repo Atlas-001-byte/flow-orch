@@ -6,7 +6,11 @@ from typing import Any, Callable, Optional
 
 @dataclass(frozen=True)
 class TaskDef:
-    """单个任务的静态定义。"""
+    """单个任务的静态定义。
+
+    retry_backoff_multiplier 缺省为 1（固定等待）；max_retry_delay_seconds
+    缺省为 None，表示退避后的等待不设上限。
+    """
 
     id: str
     task_type: str
@@ -14,6 +18,8 @@ class TaskDef:
     max_attempts: int
     retry_delay_seconds: float
     args: dict[str, Any]
+    retry_backoff_multiplier: float = 1.0
+    max_retry_delay_seconds: Optional[float] = None
 
 
 @dataclass
@@ -45,12 +51,15 @@ class CallbackEvent:
 
     event 为 task_started、task_retrying、task_succeeded、task_failed
     或 task_skipped；timestamp 为 UTC ISO 8601 字符串。
+    wait_seconds 仅 task_retrying 携带本次重试的实际等待秒数，
+    其余事件均为 None。
     """
 
     event: str
     task_id: str
     attempt: int
     timestamp: str
+    wait_seconds: Optional[float] = None
 
 
 # 回调函数：接收一个 CallbackEvent，无返回值。

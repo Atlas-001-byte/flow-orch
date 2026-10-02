@@ -16,6 +16,21 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _retry_wait_seconds(task: TaskDef, attempt: int) -> float:
+    """第 attempt 次失败后、准备第 attempt+1 次尝试前的实际等待秒数。
+
+    基础 delay 乘以 multiplier 的 attempt-1 次方；配置上限后取计算值
+    与上限的较小值。delay 为 0 时结果恒为 0（multiplier 已由校验
+    保证为有限值，不会产生 NaN/inf）。
+    """
+    delay = task.retry_delay_seconds * (
+        task.retry_backoff_multiplier ** (attempt - 1)
+    )
+    if task.max_retry_delay_seconds is not None:
+        delay = min(delay, task.max_retry_delay_seconds)
+    return delay
+
+
 def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> RunResult:
     """校验并执行一个工作流定义。
 
@@ -37,9 +52,13 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
     by_id = {task.id: task for task in tasks}
     lock = threading.Lock()  # 保护回调与 results 的串行可见性
 
-    def emit(event: str, task_id: str, attempt: int) -> None:
+    def emit(
+        event: str, task_id: str, attempt: int, wait_seconds: Optional[float] = None
+    ) -> None:
         if callback is not None:
-            callback(CallbackEvent(event, task_id, attempt, _utc_now_iso()))
+            callback(
+                CallbackEvent(event, task_id, attempt, _utc_now_iso(), wait_seconds)
+            )
 
     def execute_task(task: TaskDef) -> TaskResult:
         """在工作线程中执行单个任务，含重试循环。"""
@@ -50,10 +69,12 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                 output = run_once(task, results)
             except TaskExecutionError as exc:
                 if attempt < task.max_attempts:
+                    # 等待发生在 task_retrying 之后、下一次 task_started 之前。
+                    wait_seconds = _retry_wait_seconds(task, attempt)
                     with lock:
-                        emit("task_retrying", task.id, attempt)
-                    if task.retry_delay_seconds > 0:
-                        time.sleep(task.retry_delay_seconds)
+                        emit("task_retrying", task.id, attempt, wait_seconds)
+                    if wait_seconds > 0:
+                        time.sleep(wait_seconds)
                     continue
                 with lock:
                     emit("task_failed", task.id, attempt)

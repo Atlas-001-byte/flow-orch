@@ -50,7 +50,9 @@ print(result.run_id, result.status, result.results)
 | `task_type` | — | `value` 或 `fail_now` |
 | `depends_on` | `[]` | 所依赖任务的 id 数组，不可重复 |
 | `max_attempts` | `1` | 最大尝试次数，整数且 ≥ 1 |
-| `retry_delay_seconds` | `0` | 失败后重试前的等待秒数，数值且 ≥ 0 |
+| `retry_delay_seconds` | `0` | 失败后重试前的基础等待秒数，数值且 ≥ 0 |
+| `retry_backoff_multiplier` | `1` | 指数退避乘数，有限数值且 ≥ 1（布尔不算数值） |
+| `max_retry_delay_seconds` | 无上限 | 单次重试等待上限，有限数值且 ≥ 0（布尔不算数值） |
 | `args` | `{}` | 任务参数（JSON 对象） |
 
 ## 任务类型
@@ -62,8 +64,13 @@ print(result.run_id, result.status, result.results)
 ## 执行语义
 
 - 依赖全部成功后任务才可执行；相互独立的任务在线程池中并发执行。
-- 失败后等待 `retry_delay_seconds` 再重试，最多 `max_attempts` 次；
-  最后一次尝试失败不再等待。
+- 失败后按下列规则等待再重试，最多 `max_attempts` 次；
+  第 n 次失败、准备第 n+1 次尝试前的等待秒数为
+  `retry_delay_seconds * retry_backoff_multiplier ** (n - 1)`；省略
+  multiplier 时固定等待 `retry_delay_seconds`。配置
+  `max_retry_delay_seconds` 后等待取计算值与上限的较小值，未配置则不截断；
+  `retry_delay_seconds` 为 0 时所有等待均为 0。最后一次尝试失败不再等待。
+- 等待发生在 `task_retrying` 事件之后、下一次 `task_started` 之前。
 - 任一依赖为 failed/skipped 时，任务标记为 skipped，下游连锁跳过。
 - skipped 任务 `attempts` 为 0，`output`、`error` 为 null。
 
@@ -95,7 +102,7 @@ print(result.run_id, result.status, result.results)
 | `DUPLICATE_TASK_ID` | 任务 id 重复 |
 | `UNKNOWN_DEPENDENCY` | depends_on 引用了不存在的任务 |
 | `DEPENDENCY_CYCLE` | 依赖图有环（含自依赖） |
-| `INVALID_RETRY_POLICY` | max_attempts 非整数或 < 1；delay 非有限数值或 < 0 |
+| `INVALID_RETRY_POLICY` | max_attempts 非整数或 < 1；delay 非有限数值或 < 0；multiplier 非有限数值、< 1 或为布尔；max delay 非有限数值、< 0 或为布尔 |
 | `INVALID_ARGS` | args 不是对象；value 任务缺 value/ref；ref 非法或未在 depends_on 中 |
 
 `WorkflowInputError`（退出码 2）：文件不可读时 `INPUT_READ_ERROR`。
@@ -104,7 +111,9 @@ print(result.run_id, result.status, result.results)
 
 `task_started`（每次尝试开始）、`task_retrying`（失败后、等待重试前）、
 `task_succeeded`、`task_failed`、`task_skipped`。事件带 `task_id`、`attempt`
-（skipped 为 0）和 UTC ISO 8601 `timestamp`。
+（skipped 为 0）和 UTC ISO 8601 `timestamp`。`task_retrying` 额外携带
+`wait_seconds`（按退避规则算出的本次实际等待秒数，可能为 0），其余事件
+`wait_seconds` 为 null。
 
 ## 状态
 
