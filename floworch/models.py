@@ -20,6 +20,8 @@ class TaskDef:
     args: dict[str, Any]
     retry_backoff_multiplier: float = 1.0
     max_retry_delay_seconds: Optional[float] = None
+    # 缺省 None 表示每次尝试不限时；否则每次尝试从开始到结束的上限秒数。
+    timeout_seconds: Optional[float] = None
 
 
 @dataclass

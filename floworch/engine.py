@@ -31,6 +31,54 @@ def _retry_wait_seconds(task: TaskDef, attempt: int) -> float:
     return delay
 
 
+def _run_attempt(task: TaskDef, results: dict[str, TaskResult]):
+    """执行一次任务体，返回 ("success", output) 或 ("failed", code, message)。
+
+    timeout_seconds 为 None 时直接执行；为 0 时不执行任务体立即超时；
+    否则在独立线程中运行并以 join 截止，到点未结束则设置取消事件中止
+    可中断等待（如 sleep），本次尝试记 TASK_TIMEOUT。超时后任务体线程
+    可能仍在运行，但其迟到结果一律忽略，不会误报成功。
+    """
+    timeout = task.timeout_seconds
+    if timeout is None:
+        try:
+            return ("success", run_once(task, results))
+        except TaskExecutionError as exc:
+            return ("failed", exc.code, exc.message)
+
+    if timeout == 0:
+        return (
+            "failed",
+            "TASK_TIMEOUT",
+            f"任务 {task.id} 的 timeout_seconds 为 0，未执行任务体即超时",
+        )
+
+    cancel = threading.Event()
+    box: dict = {}
+
+    def target() -> None:
+        try:
+            box["output"] = run_once(task, results, cancel)
+        except TaskExecutionError as exc:
+            box["error"] = exc
+
+    worker = threading.Thread(target=target, daemon=True)
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        # 截止：立即打断可中断的等待；线程迟到的任何结果都被丢弃。
+        cancel.set()
+        return (
+            "failed",
+            "TASK_TIMEOUT",
+            f"任务 {task.id} 的本次尝试在 {timeout} 秒内未完成",
+        )
+    if "error" in box:
+        exc = box["error"]
+        return ("failed", exc.code, exc.message)
+    return ("success", box["output"])
+
+
 def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> RunResult:
     """校验并执行一个工作流定义。
 
@@ -65,9 +113,9 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
         for attempt in range(1, task.max_attempts + 1):
             with lock:
                 emit("task_started", task.id, attempt)
-            try:
-                output = run_once(task, results)
-            except TaskExecutionError as exc:
+            outcome = _run_attempt(task, results)
+            if outcome[0] == "failed":
+                _, code, message = outcome
                 if attempt < task.max_attempts:
                     # 等待发生在 task_retrying 之后、下一次 task_started 之前。
                     wait_seconds = _retry_wait_seconds(task, attempt)
@@ -82,12 +130,11 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                     status="failed",
                     attempts=attempt,
                     output=None,
-                    error={"code": exc.code, "message": exc.message},
+                    error={"code": code, "message": message},
                 )
-            else:
-                with lock:
-                    emit("task_succeeded", task.id, attempt)
-                return TaskResult(status="success", attempts=attempt, output=output)
+            with lock:
+                emit("task_succeeded", task.id, attempt)
+            return TaskResult(status="success", attempts=attempt, output=outcome[1])
         # 理论上不可达（max_attempts >= 1 已由校验保证）。
         raise RuntimeError(f"任务 {task.id} 的重试循环异常退出")
 
