@@ -9,7 +9,7 @@ from typing import Any, Optional
 from .errors import TaskExecutionError
 from .models import CallbackEvent, EventCallback, RunResult, TaskDef, TaskResult
 from .tasks import run_once
-from .validator import build_tasks
+from .validator import build_tasks, validate_max_concurrency
 
 
 class _AttemptTimeout(Exception):
@@ -86,11 +86,13 @@ def _run_attempt(
 def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> RunResult:
     """校验并执行一个工作流定义。
 
-    workflow 为已解析的 JSON 对象，含 name、tasks。定义无效抛
-    WorkflowDefinitionError；返回 RunResult 汇总每个任务的结果。
-    相互独立的任务在线程池中并发执行。
+    workflow 为已解析的 JSON 对象，含 name、tasks，可选 max_concurrency。
+    定义无效抛 WorkflowDefinitionError；返回 RunResult 汇总每个任务的结果。
+    相互独立的任务在线程池中并发执行；配置 max_concurrency 时同时
+    执行的任务数不超过该上限。
     """
     tasks: list[TaskDef] = build_tasks(workflow)
+    max_concurrency = validate_max_concurrency(workflow)
     name = workflow["name"]
 
     # 结果按定义顺序输出；先建好槽位，任务完成后按 id 回填。
@@ -149,28 +151,46 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
         return TaskResult(status="skipped", attempts=0, output=None, error=None)
 
     ready = [task.id for task in tasks if not task.depends_on]
+    # 并发额度：从 task_started 起占用，到 task_succeeded / task_failed /
+    # task_skipped 才释放，重试等待期间也占用。额度在调度侧以 active 计数，
+    # 提交前占用、工作线程发出终止事件且 future 完成后释放，因此运行中的
+    # 任务数永远不会超过 max_concurrency；未配置时不限制。
     max_workers = max(1, len(tasks))
+    if max_concurrency is not None:
+        max_workers = min(max_workers, max_concurrency)
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {}
+        active = 0  # 已占用且尚未释放的并发额度
 
-        def submit(tid: str) -> None:
+        def submit(tid: str) -> bool:
+            """提交一个就绪任务；额度不足时不提交并返回 False。"""
+            nonlocal active
             task = by_id[tid]
             deps_succeeded = all(
                 results[dep].status == "success" for dep in task.depends_on
             )
-            if deps_succeeded:
-                futures[pool.submit(execute_task, task)] = tid
-            else:
+            if not deps_succeeded:
                 # 依赖中有 failed/skipped：本任务及（稍后）其下游一律跳过。
+                # 跳过的任务从未 started，不占用并发额度。
                 results[tid] = skip_task(task)
                 for child in dependents[tid]:
                     remaining_deps[child] -= 1
                     if remaining_deps[child] == 0:
                         ready.append(child)
+                return True
+            if max_concurrency is not None and active >= max_concurrency:
+                return False
+            active += 1
+            futures[pool.submit(execute_task, task)] = tid
+            return True
 
         while True:
             while ready:
-                submit(ready.pop())
+                tid = ready.pop()
+                if not submit(tid):
+                    # 额度已满：留待有任务释放额度后再提交。
+                    ready.append(tid)
+                    break
 
             # 跳过的任务可能在不经过线程池的情况下连锁放行下游。
             if not futures:
@@ -179,6 +199,7 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
             done, _ = wait(set(futures), return_when="FIRST_COMPLETED")
             for future in done:
                 tid = futures.pop(future)
+                active -= 1
                 results[tid] = future.result()
                 for child in dependents[tid]:
                     remaining_deps[child] -= 1

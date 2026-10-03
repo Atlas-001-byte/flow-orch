@@ -88,6 +88,28 @@ def build_tasks(data: Any) -> list[TaskDef]:
     return tasks
 
 
+def validate_max_concurrency(data: dict) -> Optional[int]:
+    """校验顶层 max_concurrency 并返回其值；省略时返回 None（不限制并发）。
+
+    只接受 >= 1 的 JSON 整数（布尔值不算整数）；否则抛
+    WorkflowDefinitionError，code 固定为 INVALID_CONCURRENCY_POLICY。
+    """
+    if "max_concurrency" not in data:
+        return None
+    value = data["max_concurrency"]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise _err(
+            "INVALID_CONCURRENCY_POLICY",
+            "max_concurrency 必须是整数（布尔值不被接受）",
+        )
+    if value < 1:
+        raise _err(
+            "INVALID_CONCURRENCY_POLICY",
+            "max_concurrency 不能小于 1",
+        )
+    return value
+
+
 def _validate_depends_on(task_id: str, value: Any) -> list[str]:
     if not isinstance(value, list):
         raise _err("INVALID_SCHEMA", f"任务 {task_id} 的 depends_on 必须是数组")

@@ -41,6 +41,7 @@ print(result.run_id, result.status, result.results)
 | --- | --- |
 | `name` | 非空字符串，作为 `run_id` |
 | `tasks` | 任务数组，可为空 |
+| `max_concurrency` | 可选，允许同时执行的任务数上限，JSON 整数且 ≥ 1（布尔不被接受）；省略时不限制并发 |
 
 任务字段：
 
@@ -69,6 +70,10 @@ print(result.run_id, result.status, result.results)
 ## 执行语义
 
 - 依赖全部成功后任务才可执行；相互独立的任务在线程池中并发执行。
+- 配置 `max_concurrency` 后，依赖就绪的任务仅在并发额度未满时启动：
+  额度从 `task_started` 起占用，到 `task_succeeded`、`task_failed` 或
+  `task_skipped` 才释放，重试等待期间也占用；额度释放后才能提交其他
+  就绪任务。省略时不限制并发，行为与之前一致。
 - 失败后按下列规则等待再重试，最多 `max_attempts` 次；
   第 n 次失败、准备第 n+1 次尝试前的等待秒数为
   `retry_delay_seconds * retry_backoff_multiplier ** (n - 1)`；省略
@@ -115,6 +120,7 @@ print(result.run_id, result.status, result.results)
 | `DEPENDENCY_CYCLE` | 依赖图有环（含自依赖） |
 | `INVALID_RETRY_POLICY` | max_attempts 非整数或 < 1；delay 非有限数值或 < 0；multiplier 非有限数值、< 1 或为布尔；max delay 非有限数值、< 0 或为布尔 |
 | `INVALID_TIMEOUT_POLICY` | timeout_seconds 非有限数值、< 0 或为布尔 |
+| `INVALID_CONCURRENCY_POLICY` | max_concurrency 非整数、为布尔或 < 1 |
 | `INVALID_ARGS` | args 不是对象；value 任务缺 value/ref；ref 非法或未在 depends_on 中；sleep 任务缺 seconds/output，或 seconds 非有限数值、< 0 或为布尔 |
 
 `WorkflowInputError`（退出码 2）：文件不可读时 `INPUT_READ_ERROR`。
