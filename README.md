@@ -47,12 +47,13 @@ print(result.run_id, result.status, result.results)
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `id` | — | 非空字符串，全工作流唯一 |
-| `task_type` | — | `value` 或 `fail_now` |
+| `task_type` | — | `value`、`fail_now` 或 `sleep` |
 | `depends_on` | `[]` | 所依赖任务的 id 数组，不可重复 |
 | `max_attempts` | `1` | 最大尝试次数，整数且 ≥ 1 |
 | `retry_delay_seconds` | `0` | 失败后重试前的基础等待秒数，数值且 ≥ 0 |
 | `retry_backoff_multiplier` | `1` | 指数退避乘数，有限数值且 ≥ 1（布尔不算数值） |
 | `max_retry_delay_seconds` | 无上限 | 单次重试等待上限，有限数值且 ≥ 0（布尔不算数值） |
+| `timeout_seconds` | 不限时 | 每次尝试从开始到结束的时限，有限数值且 ≥ 0（布尔不算数值）；`0` 表示不执行任务体立即超时 |
 | `args` | `{}` | 任务参数（JSON 对象） |
 
 ## 任务类型
@@ -60,6 +61,10 @@ print(result.run_id, result.status, result.results)
 - **value**：取 `args.value` 的原值作为输出；或写 `args.ref`（必须出现在
   `depends_on` 中），输出所引用依赖任务的输出。二选一，至少提供一个。
 - **fail_now**：执行即失败，耗尽重试后 `error.code` 为 `BUILTIN_TASK_FAILED`。
+- **sleep**：等待 `args.seconds` 秒（有限数值且 ≥ 0，布尔不算数值）后返回
+  `args.output` 的原值（任意 JSON 值）。`seconds` 与 `output` 必须同时提供。
+  若本任务配置了 `timeout_seconds`，到截止仍未等满时等待立即结束并按超时处理，
+  不会阻塞到原定秒数走完。
 
 ## 执行语义
 
@@ -73,6 +78,12 @@ print(result.run_id, result.status, result.results)
 - 等待发生在 `task_retrying` 事件之后、下一次 `task_started` 之前。
 - 任一依赖为 failed/skipped 时，任务标记为 skipped，下游连锁跳过。
 - skipped 任务 `attempts` 为 0，`output`、`error` 为 null。
+- 配置 `timeout_seconds` 后，每次尝试从开始单独计时：截止前成功则输出不变；
+  到截止仍未完成时本次尝试立即中止并计入 `attempts`，`output` 为 null，
+  `error.code` 为 `TASK_TIMEOUT`、`message` 非空，随后与普通失败一样按
+  `max_attempts` 与退避字段重试，额度耗尽后任务 status 为 failed。
+  `timeout_seconds` 为 0 时不执行任务体、立即判超时。省略时不限时，
+  其他任务默认行为不变。
 
 ## 输出与退出码
 
@@ -103,7 +114,8 @@ print(result.run_id, result.status, result.results)
 | `UNKNOWN_DEPENDENCY` | depends_on 引用了不存在的任务 |
 | `DEPENDENCY_CYCLE` | 依赖图有环（含自依赖） |
 | `INVALID_RETRY_POLICY` | max_attempts 非整数或 < 1；delay 非有限数值或 < 0；multiplier 非有限数值、< 1 或为布尔；max delay 非有限数值、< 0 或为布尔 |
-| `INVALID_ARGS` | args 不是对象；value 任务缺 value/ref；ref 非法或未在 depends_on 中 |
+| `INVALID_TIMEOUT_POLICY` | timeout_seconds 非有限数值、< 0 或为布尔 |
+| `INVALID_ARGS` | args 不是对象；value 任务缺 value/ref；ref 非法或未在 depends_on 中；sleep 任务缺 seconds/output，或 seconds 非有限数值、< 0 或为布尔 |
 
 `WorkflowInputError`（退出码 2）：文件不可读时 `INPUT_READ_ERROR`。
 

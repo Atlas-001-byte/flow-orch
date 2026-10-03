@@ -1,15 +1,27 @@
-"""DAG 调度引擎：并发执行、失败重试与下游跳过。"""
+"""DAG 调度引擎：并发执行、失败重试、单次尝试超时与下游跳过。"""
 
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from .errors import TaskExecutionError
 from .models import CallbackEvent, EventCallback, RunResult, TaskDef, TaskResult
 from .tasks import run_once
 from .validator import build_tasks
+
+
+class _AttemptTimeout(Exception):
+    """单次尝试超过 timeout_seconds；结果 error.code 固定为 TASK_TIMEOUT。"""
+
+    code = "TASK_TIMEOUT"
+
+    def __init__(self, task_id: str, attempt: int, timeout_seconds: float):
+        self.message = (
+            f"任务 {task_id} 第 {attempt} 次尝试超过 {timeout_seconds} 秒未完成"
+        )
+        super().__init__(self.message)
 
 
 def _utc_now_iso() -> str:
@@ -29,6 +41,46 @@ def _retry_wait_seconds(task: TaskDef, attempt: int) -> float:
     if task.max_retry_delay_seconds is not None:
         delay = min(delay, task.max_retry_delay_seconds)
     return delay
+
+
+def _run_attempt(
+    task: TaskDef, results: dict[str, TaskResult], attempt: int
+) -> Any:
+    """执行一次任务体，成功返回输出。
+
+    失败抛 TaskExecutionError；超过 timeout_seconds 抛 _AttemptTimeout。
+    未配置超时时保持同步直调；timeout_seconds 为 0 时不执行任务体，
+    立即判超时。超时后任务体线程被遗弃（守护线程，不阻塞进程退出），
+    其晚到的结果不会被采纳，因此不可能误报成功。
+    """
+    timeout = task.timeout_seconds
+    if timeout is None:
+        return run_once(task, results)
+    if timeout <= 0:
+        raise _AttemptTimeout(task.id, attempt, timeout)
+
+    cancel = threading.Event()
+    holder: dict[str, Any] = {}
+
+    def worker() -> None:
+        try:
+            holder["output"] = run_once(task, results, cancel)
+        except BaseException as exc:  # noqa: BLE001 - 交回主线程按原语义抛出
+            holder["exc"] = exc
+
+    runner = threading.Thread(
+        target=worker, name=f"attempt-{task.id}-{attempt}", daemon=True
+    )
+    runner.start()
+    runner.join(timeout)
+    if runner.is_alive():
+        # 到截止仍未完成：中止可中断等待（sleep），不再 join 该线程。
+        cancel.set()
+        raise _AttemptTimeout(task.id, attempt, timeout)
+    if "exc" in holder:
+        raise holder["exc"]
+    return holder["output"]
+
 
 
 def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> RunResult:
@@ -66,8 +118,8 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
             with lock:
                 emit("task_started", task.id, attempt)
             try:
-                output = run_once(task, results)
-            except TaskExecutionError as exc:
+                output = _run_attempt(task, results, attempt)
+            except (TaskExecutionError, _AttemptTimeout) as exc:
                 if attempt < task.max_attempts:
                     # 等待发生在 task_retrying 之后、下一次 task_started 之前。
                     wait_seconds = _retry_wait_seconds(task, attempt)

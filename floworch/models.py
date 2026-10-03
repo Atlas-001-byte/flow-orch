@@ -9,7 +9,8 @@ class TaskDef:
     """单个任务的静态定义。
 
     retry_backoff_multiplier 缺省为 1（固定等待）；max_retry_delay_seconds
-    缺省为 None，表示退避后的等待不设上限。
+    缺省为 None，表示退避后的等待不设上限；timeout_seconds 缺省为 None，
+    表示每次尝试不限时。
     """
 
     id: str
@@ -20,6 +21,7 @@ class TaskDef:
     args: dict[str, Any]
     retry_backoff_multiplier: float = 1.0
     max_retry_delay_seconds: Optional[float] = None
+    timeout_seconds: Optional[float] = None
 
 
 @dataclass

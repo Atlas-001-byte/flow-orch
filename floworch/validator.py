@@ -6,7 +6,7 @@ from typing import Any, Optional
 from .errors import WorkflowDefinitionError
 from .models import TaskDef
 
-KNOWN_TASK_TYPES = ("value", "fail_now")
+KNOWN_TASK_TYPES = ("value", "fail_now", "sleep")
 
 
 def _err(code: str, message: str) -> WorkflowDefinitionError:
@@ -65,6 +65,7 @@ def build_tasks(data: Any) -> list[TaskDef]:
             max_retry_delay,
         ) = _validate_retry_policy(task_id, raw)
         args = _validate_args_type(task_id, raw.get("args", {}))
+        timeout_seconds = _validate_timeout_policy(task_id, raw)
 
         tasks.append(
             TaskDef(
@@ -76,6 +77,7 @@ def build_tasks(data: Any) -> list[TaskDef]:
                 args=args,
                 retry_backoff_multiplier=backoff_multiplier,
                 max_retry_delay_seconds=max_retry_delay,
+                timeout_seconds=timeout_seconds,
             )
         )
 
@@ -176,6 +178,24 @@ def _validate_args_type(task_id: str, value: Any) -> dict:
     return value
 
 
+def _validate_timeout_policy(task_id: str, raw: dict) -> Optional[float]:
+    """timeout_seconds 省略时为 None（不限时）；否则必须是 >= 0 的有限数值。"""
+    if "timeout_seconds" not in raw:
+        return None
+    timeout = raw["timeout_seconds"]
+    if not _is_real_number(timeout) or not math.isfinite(timeout):
+        raise _err(
+            "INVALID_TIMEOUT_POLICY",
+            f"任务 {task_id} 的 timeout_seconds 必须是有限数值",
+        )
+    if timeout < 0:
+        raise _err(
+            "INVALID_TIMEOUT_POLICY",
+            f"任务 {task_id} 的 timeout_seconds 不能小于 0",
+        )
+    return float(timeout)
+
+
 def _validate_dependency_references(tasks: list[TaskDef]) -> None:
     known = {task.id for task in tasks}
     for task in tasks:
@@ -228,3 +248,20 @@ def _validate_task_args(tasks: list[TaskDef]) -> None:
                         f"任务 {task.id} 的 ref 目标 {ref} 必须出现在 depends_on 中",
                     )
         # fail_now 对 args 无额外要求。
+        if task.task_type == "sleep":
+            if "seconds" not in task.args or "output" not in task.args:
+                raise _err(
+                    "INVALID_ARGS",
+                    f"任务 {task.id} 的 sleep 类型要求同时提供 args.seconds 与 args.output",
+                )
+            seconds = task.args["seconds"]
+            if not _is_real_number(seconds) or not math.isfinite(seconds):
+                raise _err(
+                    "INVALID_ARGS",
+                    f"任务 {task.id} 的 args.seconds 必须是有限数值",
+                )
+            if seconds < 0:
+                raise _err(
+                    "INVALID_ARGS",
+                    f"任务 {task.id} 的 args.seconds 不能小于 0",
+                )
