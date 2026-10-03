@@ -18,9 +18,10 @@ def _is_real_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def build_tasks(data: Any) -> list[TaskDef]:
-    """校验顶层工作流定义并返回有序 TaskDef 列表。
+def build_tasks(data: Any) -> tuple[list[TaskDef], Optional[int]]:
+    """校验顶层工作流定义并返回 (有序 TaskDef 列表, max_concurrency)。
 
+    max_concurrency 省略时为 None，表示不限制同时执行的任务数。
     任何定义问题都抛 WorkflowDefinitionError，绝不产生其他异常类型。
     """
     if not isinstance(data, dict):
@@ -33,6 +34,8 @@ def build_tasks(data: Any) -> list[TaskDef]:
     tasks_raw = data.get("tasks")
     if not isinstance(tasks_raw, list):
         raise _err("INVALID_SCHEMA", "tasks 必须是数组")
+
+    max_concurrency = _validate_concurrency_policy(data)
 
     tasks: list[TaskDef] = []
     seen_ids: set[str] = set()
@@ -85,7 +88,28 @@ def build_tasks(data: Any) -> list[TaskDef]:
     _validate_no_cycle(tasks)
     _validate_task_args(tasks)
 
-    return tasks
+    return tasks, max_concurrency
+
+
+def _validate_concurrency_policy(data: dict) -> Optional[int]:
+    """max_concurrency 省略时为 None（不限并发）；否则必须是 >= 1 的整数。
+
+    仅接受 JSON 整数：布尔值与 2.0 这类浮点一律拒绝。
+    """
+    if "max_concurrency" not in data:
+        return None
+    value = data["max_concurrency"]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise _err(
+            "INVALID_CONCURRENCY_POLICY",
+            "max_concurrency 必须是整数",
+        )
+    if value < 1:
+        raise _err(
+            "INVALID_CONCURRENCY_POLICY",
+            "max_concurrency 不能小于 1",
+        )
+    return value
 
 
 def _validate_depends_on(task_id: str, value: Any) -> list[str]:

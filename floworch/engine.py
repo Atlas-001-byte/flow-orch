@@ -1,4 +1,4 @@
-"""DAG 调度引擎：并发执行、失败重试、单次尝试超时与下游跳过。"""
+"""DAG 调度引擎：并发执行、并发上限、失败重试、单次尝试超时与下游跳过。"""
 
 import threading
 import time
@@ -86,11 +86,13 @@ def _run_attempt(
 def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> RunResult:
     """校验并执行一个工作流定义。
 
-    workflow 为已解析的 JSON 对象，含 name、tasks。定义无效抛
-    WorkflowDefinitionError；返回 RunResult 汇总每个任务的结果。
-    相互独立的任务在线程池中并发执行。
+    workflow 为已解析的 JSON 对象，含 name、tasks，可选 max_concurrency。
+    定义无效抛 WorkflowDefinitionError；返回 RunResult 汇总每个任务的结果。
+    相互独立的任务在线程池中并发执行；配置 max_concurrency 时，同时占用
+    额度的任务不超过该值——额度自 task_started 起占用，重试等待期间不
+    释放，直到 task_succeeded、task_failed 或 task_skipped 才释放。
     """
-    tasks: list[TaskDef] = build_tasks(workflow)
+    tasks, max_concurrency = build_tasks(workflow)
     name = workflow["name"]
 
     # 结果按定义顺序输出；先建好槽位，任务完成后按 id 回填。
@@ -169,7 +171,12 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                         ready.append(child)
 
         while True:
-            while ready:
+            # 并发额度由在途 future 数体现：任务自提交（task_started）起
+            # 占用一份额度，重试等待也在其 future 内，直到终态事件后
+            # future 完成才释放。skipped 任务不进线程池，不占额度。
+            while ready and (
+                max_concurrency is None or len(futures) < max_concurrency
+            ):
                 submit(ready.pop())
 
             # 跳过的任务可能在不经过线程池的情况下连锁放行下游。
