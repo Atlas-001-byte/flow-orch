@@ -56,6 +56,7 @@ print(result.run_id, result.status, result.results)
 | `retry_backoff_multiplier` | `1` | 指数退避乘数，有限数值且 ≥ 1（布尔不算数值） |
 | `max_retry_delay_seconds` | 无上限 | 单次重试等待上限，有限数值且 ≥ 0（布尔不算数值） |
 | `timeout_seconds` | 不限时 | 每次尝试从开始到结束的时限，有限数值且 ≥ 0（布尔不算数值）；`0` 表示不执行任务体立即超时 |
+| `priority` | `0` | 启动优先级，JSON 整数（布尔不算整数），大小不限；仅在并发额度有限时影响就绪任务的启动选择，数值越大越优先 |
 | `args` | `{}` | 任务参数（JSON 对象） |
 
 ## 任务类型
@@ -75,6 +76,11 @@ print(result.run_id, result.status, result.results)
   额度自 `task_started` 起占用，重试等待期间不释放，直到
   `task_succeeded`、`task_failed` 或 `task_skipped` 才释放，释放后才能
   提交其他就绪任务。skipped 任务不占用额度。省略时不限并发。
+- 任务可配置可选的 `priority`（省略按 0）：额度只够启动部分就绪任务时，
+  `priority` 数值大者优先启动，并列时保持原有相对启动顺序；没有更高
+  优先级任务且额度未满时仍按依赖就绪等待，不会越过依赖关系。
+  `priority` 只改变就绪候选的启动选择，不改变重试、超时、失败传播、
+  结果与事件口径；未配置或全部相等时行为与之前完全一致。
 - 失败后按下列规则等待再重试，最多 `max_attempts` 次；
   第 n 次失败、准备第 n+1 次尝试前的等待秒数为
   `retry_delay_seconds * retry_backoff_multiplier ** (n - 1)`；省略
@@ -138,6 +144,7 @@ print(result.run_id, result.status, result.results)
 | `INVALID_TIMEOUT_POLICY` | 任务级 timeout_seconds 非有限数值、< 0 或为布尔 |
 | `INVALID_RUN_TIMEOUT_POLICY` | 顶层 timeout_seconds 非有限数值、< 0 或为布尔 |
 | `INVALID_CONCURRENCY_POLICY` | max_concurrency 非整数、为布尔或 < 1 |
+| `INVALID_PRIORITY_POLICY` | priority 非整数或为布尔 |
 | `INVALID_ARGS` | args 不是对象；value 任务缺 value/ref；ref 非法或未在 depends_on 中；sleep 任务缺 seconds/output，或 seconds 非有限数值、< 0 或为布尔 |
 
 `WorkflowInputError`（退出码 2）：文件不可读时 `INPUT_READ_ERROR`。

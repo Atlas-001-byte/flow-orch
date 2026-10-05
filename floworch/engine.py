@@ -122,7 +122,10 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
     汇总每个任务的结果。相互独立的任务在线程池中并发执行；配置
     max_concurrency 时，同时占用额度的任务不超过该值——额度自 task_started
     起占用，重试等待期间不释放，直到 task_succeeded、task_failed 或
-    task_skipped 才释放。
+    task_skipped 才释放。任务可配置可选的 priority（省略按 0）：额度只够
+    启动部分就绪任务时 priority 数值大者优先，并列时保持原有相对启动
+    顺序；priority 只改变就绪候选的启动选择，不改变依赖约束、重试、
+    超时与结果口径。
 
     配置顶层 timeout_seconds 后，从校验完成、执行开始时起算总时限：到期不再
     启动新任务、新尝试或重试等待，正在等待的 sleep 立即结束；已成功任务保留
@@ -278,6 +281,15 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                 if remaining_deps[child] == 0:
                     ready.append(child)
 
+        def pop_ready() -> str:
+            # 从就绪候选中选 priority 最大者启动；并列时取就绪列表中位置
+            # 靠后的，与未配置优先级时 ready.pop() 的相对启动顺序一致。
+            best = max(
+                range(len(ready)),
+                key=lambda i: (by_id[ready[i]].priority, i),
+            )
+            return ready.pop(best)
+
         def submit(tid: str) -> None:
             task = by_id[tid]
             deps_succeeded = all(
@@ -300,10 +312,12 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                 # 并发额度由在途 future 数体现：任务自提交（task_started）起
                 # 占用一份额度，重试等待也在其 future 内，直到终态事件后
                 # future 完成才释放。skipped 任务不进线程池，不占额度。
+                # 额度只够启动部分就绪任务时，priority 大者优先；priority
+                # 只改变就绪候选的启动选择，不改变依赖约束与额度口径。
                 while ready and (
                     max_concurrency is None or len(futures) < max_concurrency
                 ):
-                    submit(ready.pop())
+                    submit(pop_ready())
 
             # 跳过的任务可能在不经过线程池的情况下连锁放行下游。
             if not futures:

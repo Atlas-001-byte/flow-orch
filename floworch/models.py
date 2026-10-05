@@ -10,7 +10,8 @@ class TaskDef:
 
     retry_backoff_multiplier 缺省为 1（固定等待）；max_retry_delay_seconds
     缺省为 None，表示退避后的等待不设上限；timeout_seconds 缺省为 None，
-    表示每次尝试不限时。
+    表示每次尝试不限时；priority 缺省为 0，仅在并发额度有限时影响就绪
+    任务的启动选择（数值越大越优先），不影响其他执行语义。
     """
 
     id: str
@@ -22,6 +23,7 @@ class TaskDef:
     retry_backoff_multiplier: float = 1.0
     max_retry_delay_seconds: Optional[float] = None
     timeout_seconds: Optional[float] = None
+    priority: int = 0
 
 
 @dataclass
