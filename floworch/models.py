@@ -40,13 +40,58 @@ class TaskResult:
     error: Optional[dict[str, Any]] = None
 
 
+@dataclass(frozen=True)
+class AttemptRecord:
+    """一次已实际开始（task_started 之后）的尝试的轨迹记录。
+
+    outcome 为 success、task_failed、task_timeout 或 workflow_timeout，
+    依次表示成功、普通失败（含 fail_now 耗尽前每次失败）、任务级
+    timeout_seconds 截止中断、工作流总时限中断在途尝试。success 时
+    error 为 None，其余 error.code 分别为 BUILTIN_TASK_FAILED、
+    TASK_TIMEOUT、WORKFLOW_TIMEOUT 并保留实际错误 message。
+
+    duration_seconds 只计本次尝试自身的执行时长（非负有限），不含
+    重试等待；finished_at 不早于 started_at，均为 UTC ISO 8601。
+    跳过与从未开始的任务不产生记录；重试的每次尝试独立记录。
+    """
+
+    task_id: str
+    attempt: int
+    started_at: str
+    finished_at: str
+    duration_seconds: float
+    outcome: str
+    error: Optional[dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class RunTrace:
+    """一次运行的内存轨迹（不持久化）。
+
+    started_at、finished_at 为运行起止的 UTC ISO 8601 时间；events 按
+    发出顺序保存 CallbackEvent，与回调逐条一致（run_timed_out 至多
+    一次）；attempts 只含 task_started 之后的尝试。正常结束与总时限
+    到期均返回完整轨迹。
+    """
+
+    started_at: str
+    finished_at: str
+    events: list["CallbackEvent"]
+    attempts: list[AttemptRecord]
+
+
 @dataclass
 class RunResult:
-    """整个工作流的运行结果，run_id 取工作流 name。"""
+    """整个工作流的运行结果，run_id 取工作流 name。
+
+    trace 仅在 run_workflow 以 collect_trace=True 调用时为 RunTrace，
+    否则为 None。
+    """
 
     run_id: str
     status: str  # success | failed
     results: dict[str, TaskResult]
+    trace: Optional[RunTrace] = None
 
 
 @dataclass(frozen=True)

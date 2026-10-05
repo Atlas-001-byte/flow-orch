@@ -163,6 +163,30 @@ print(result.run_id, result.status, result.results)
 该事件之后，已经成功的任务不再补发事件，未进入终态的任务不再补发
 `task_succeeded`、`task_failed` 或 `task_skipped`。
 
+## 运行轨迹（trace）
+
+Python API 传 `collect_trace=True` 后，`RunResult.trace` 为 `RunTrace`
+（未传或传 False 时 `trace` 为 None，既有行为不变）。CLI 加 `--trace`
+后 stdout JSON 额外携带同结构的 `trace` 字段；省略时输出与退出码不变。
+轨迹只存于本次运行的内存中，不持久化。
+
+`RunTrace` 字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `started_at` / `finished_at` | 运行起止时间，UTC ISO 8601；`finished_at` 不早于 `started_at` |
+| `events` | 按发出顺序的 `CallbackEvent`，与回调逐条一致；`run_timed_out` 至多一次 |
+| `attempts` | 每次已实际开始（`task_started` 之后）的尝试一条记录 |
+
+`attempts` 每项含 `task_id`、`attempt`、`started_at`、`finished_at`、
+`duration_seconds`、`outcome`、`error`。跳过与从未开始的任务不记录；
+重试的每次尝试独立记录；重试等待不计入 `duration_seconds`（非负有限）。
+`outcome` 取值：`success`（`error` 为 null）、`task_failed`（普通失败，
+`error.code` 为 `BUILTIN_TASK_FAILED`）、`task_timeout`（任务级时限中断，
+`TASK_TIMEOUT`）、`workflow_timeout`（总时限中断在途尝试，
+`WORKFLOW_TIMEOUT`）；后三者 `error` 保留实际错误 message。正常结束与
+总时限到期均返回完整轨迹。
+
 ## 状态
 
 Python 3.11 DAG 执行功能已实现：校验、并发调度、重试与回调可直接使用。
