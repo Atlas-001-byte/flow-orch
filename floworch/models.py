@@ -29,7 +29,9 @@ class TaskResult:
     """单个任务的运行结果。
 
     status 为 success、failed 或 skipped；skipped 时 attempts 为 0，
-    output 与 error 均为 None。
+    output 与 error 均为 None。工作流总时限到期时尚未进入终态的任务
+    记为 failed：attempts 为已实际开始的尝试次数（从未开始为 0），
+    output 为 None，error.code 为 WORKFLOW_TIMEOUT。
     """
 
     status: str
@@ -51,10 +53,12 @@ class RunResult:
 class CallbackEvent:
     """回调事件。
 
-    event 为 task_started、task_retrying、task_succeeded、task_failed
-    或 task_skipped；timestamp 为 UTC ISO 8601 字符串。
+    event 为 task_started、task_retrying、task_succeeded、task_failed、
+    task_skipped 或 run_timed_out；timestamp 为 UTC ISO 8601 字符串。
     wait_seconds 仅 task_retrying 携带本次重试的实际等待秒数，
-    其余事件均为 None。
+    其余事件均为 None。run_timed_out 在工作流总时限到期收口时发出
+    一次：task_id 为空字符串、attempt 为 0、wait_seconds 为 None；
+    到期时未进入终态的任务不再补发任何任务终态事件。
     """
 
     event: str
