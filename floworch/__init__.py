@@ -4,6 +4,7 @@
 - run_workflow: 校验并执行工作流定义，返回 RunResult
 - WorkflowDefinitionError / WorkflowInputError: 定义与输入异常
 - RunResult / TaskResult / CallbackEvent: 数据模型
+- RunTrace / AttemptRecord: 内存运行轨迹（collect_trace=True 时填充）
 """
 
 from .engine import run_workflow
@@ -13,7 +14,15 @@ from .errors import (
     WorkflowDefinitionError,
     WorkflowInputError,
 )
-from .models import CallbackEvent, EventCallback, RunResult, TaskDef, TaskResult
+from .models import (
+    AttemptRecord,
+    CallbackEvent,
+    EventCallback,
+    RunResult,
+    RunTrace,
+    TaskDef,
+    TaskResult,
+)
 
 __all__ = [
     "run_workflow",
@@ -26,4 +35,6 @@ __all__ = [
     "TaskDef",
     "CallbackEvent",
     "EventCallback",
+    "RunTrace",
+    "AttemptRecord",
 ]

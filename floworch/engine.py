@@ -7,7 +7,15 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .errors import TaskExecutionError
-from .models import CallbackEvent, EventCallback, RunResult, TaskDef, TaskResult
+from .models import (
+    AttemptRecord,
+    CallbackEvent,
+    EventCallback,
+    RunResult,
+    RunTrace,
+    TaskDef,
+    TaskResult,
+)
 from .tasks import run_once
 from .validator import build_tasks
 
@@ -114,7 +122,11 @@ def _run_attempt(
     return holder["output"]
 
 
-def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> RunResult:
+def run_workflow(
+    workflow: dict,
+    callback: Optional[EventCallback] = None,
+    collect_trace: bool = False,
+) -> RunResult:
     """校验并执行一个工作流定义。
 
     workflow 为已解析的 JSON 对象，含 name、tasks，可选 max_concurrency 与
@@ -128,9 +140,19 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
     启动新任务、新尝试或重试等待，正在等待的 sleep 立即结束；已成功任务保留
     原输出，其余未进入终态的任务统一记 failed（error.code 为 WORKFLOW_TIMEOUT，
     attempts 为已经实际开始的尝试次数），整体 status 为 failed。
+
+    collect_trace 为 True 时，RunResult.trace 为本次运行的内存轨迹
+    （RunTrace：起止时间、按发出顺序与回调逐条一致的事件、每次已开始
+    尝试的记录），正常结束与超时收口均返回完整轨迹；为 False 时
+    trace 为 None，行为与此前完全一致。
     """
     tasks, max_concurrency, run_timeout = build_tasks(workflow)
     name = workflow["name"]
+
+    # 轨迹起点与总时限同一基准：校验完成、执行开始。
+    trace_started_at = _utc_now_iso()
+    trace_events: list[CallbackEvent] = []
+    trace_attempts: list[AttemptRecord] = []
 
     # 总时限从校验完成、执行开始时起算；省略时 deadline 为 None（不限时）。
     deadline: Optional[float] = (
@@ -155,10 +177,49 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
     def emit(
         event: str, task_id: str, attempt: int, wait_seconds: Optional[float] = None
     ) -> None:
+        # 所有调用点均持有 state_lock，轨迹事件因此与回调同序、逐条一致。
+        if callback is None and not collect_trace:
+            return
+        callback_event = CallbackEvent(
+            event, task_id, attempt, _utc_now_iso(), wait_seconds
+        )
+        if collect_trace:
+            trace_events.append(callback_event)
         if callback is not None:
-            callback(
-                CallbackEvent(event, task_id, attempt, _utc_now_iso(), wait_seconds)
-            )
+            callback(callback_event)
+
+    def build_trace() -> Optional[RunTrace]:
+        if not collect_trace:
+            return None
+        return RunTrace(
+            started_at=trace_started_at,
+            finished_at=_utc_now_iso(),
+            events=trace_events,
+            attempts=trace_attempts,
+        )
+
+    def record_attempt(
+        task_id: str,
+        attempt: int,
+        started_at: str,
+        start_monotonic: float,
+        outcome: str,
+        error: Optional[dict[str, Any]],
+    ) -> None:
+        """为一次已开始的尝试补全并登记轨迹记录（重试等待不计入耗时）。"""
+        if not collect_trace:
+            return
+        record = AttemptRecord(
+            task_id=task_id,
+            attempt=attempt,
+            started_at=started_at,
+            finished_at=_utc_now_iso(),
+            duration_seconds=time.monotonic() - start_monotonic,
+            outcome=outcome,
+            error=error,
+        )
+        with state_lock:
+            trace_attempts.append(record)
 
     def announce_timeout() -> None:
         """宣布总时限到期（run_timed_out 只发一次）。调用方须持有 state_lock。"""
@@ -186,7 +247,9 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
             )
             for task in tasks
         }
-        return RunResult(run_id=name, status="failed", results=ordered)
+        return RunResult(
+            run_id=name, status="failed", results=ordered, trace=build_trace()
+        )
 
     def execute_task(task: TaskDef) -> TaskResult:
         """在工作线程中执行单个任务，含重试循环。"""
@@ -218,11 +281,34 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                         error=timeout_error(),
                     )
                 emit("task_started", task.id, attempt)
+            # 轨迹只记 task_started 之后的尝试：起点取事件发出之后。
+            attempt_started_at = _utc_now_iso()
+            attempt_start = time.monotonic()
             try:
                 output = _run_attempt(task, results, attempt, deadline)
             except _RunTimedOut:
+                record_attempt(
+                    task.id,
+                    attempt,
+                    attempt_started_at,
+                    attempt_start,
+                    "workflow_timeout",
+                    timeout_error(),
+                )
                 return fail_by_timeout(attempt)
             except (TaskExecutionError, _AttemptTimeout) as exc:
+                # _AttemptTimeout 记 task_timeout，TaskExecutionError 记
+                # task_failed；两类错误的重试与终态处理保持原有同一口径。
+                record_attempt(
+                    task.id,
+                    attempt,
+                    attempt_started_at,
+                    attempt_start,
+                    "task_timeout"
+                    if isinstance(exc, _AttemptTimeout)
+                    else "task_failed",
+                    {"code": exc.code, "message": exc.message},
+                )
                 if attempt < task.max_attempts:
                     # 等待发生在 task_retrying 之后、下一次 task_started 之前。
                     wait_seconds = _retry_wait_seconds(task, attempt)
@@ -256,6 +342,14 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                     error={"code": exc.code, "message": exc.message},
                 )
             else:
+                record_attempt(
+                    task.id,
+                    attempt,
+                    attempt_started_at,
+                    attempt_start,
+                    "success",
+                    None,
+                )
                 with state_lock:
                     emit("task_succeeded", task.id, attempt)
                 return TaskResult(status="success", attempts=attempt, output=output)
@@ -370,4 +464,5 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
         run_id=name,
         status="failed" if overall_failed else "success",
         results=ordered,
+        trace=build_trace(),
     )

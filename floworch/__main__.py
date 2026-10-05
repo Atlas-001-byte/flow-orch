@@ -1,6 +1,8 @@
-"""命令行入口：python -m floworch <workflow.json>
+"""命令行入口：python -m floworch [--trace] <workflow.json>
 
 退出码：0 成功；1 工作流执行失败（结果仍打印）；2 定义或输入错误。
+--trace 时 stdout 的 JSON 额外包含 trace（内存运行轨迹）；省略时输出
+与退出码和此前完全一致。
 """
 
 import argparse
@@ -23,17 +25,31 @@ def _task_result_to_dict(result) -> dict:
     }
 
 
+def _trace_to_dict(trace) -> dict:
+    return {
+        "started_at": trace.started_at,
+        "finished_at": trace.finished_at,
+        "events": [asdict(event) for event in trace.events],
+        "attempts": [asdict(attempt) for attempt in trace.attempts],
+    }
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m floworch",
         description="执行 JSON 定义的 DAG 工作流",
     )
     parser.add_argument("workflow_file", help="工作流 JSON 文件路径")
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="在 stdout 的 JSON 中附加本次运行的内存轨迹",
+    )
     args = parser.parse_args(argv)
 
     try:
         workflow = load_workflow_file(args.workflow_file)
-        run_result = run_workflow(workflow)
+        run_result = run_workflow(workflow, collect_trace=args.trace)
     except (WorkflowInputError, WorkflowDefinitionError) as exc:
         print(
             json.dumps({"error": {"code": exc.code, "message": exc.message}}, ensure_ascii=False),
@@ -49,6 +65,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             for task_id, result in run_result.results.items()
         },
     }
+    if args.trace:
+        payload["trace"] = _trace_to_dict(run_result.trace)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 1 if run_result.status == "failed" else 0
 

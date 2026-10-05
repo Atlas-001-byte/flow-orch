@@ -29,9 +29,29 @@ result = run_workflow({
 print(result.run_id, result.status, result.results)
 ```
 
-`run_workflow(workflow, callback=None)` 返回 `RunResult`，定义无效时抛
-`WorkflowDefinitionError`。回调可选，接收 `CallbackEvent`（独立任务并发执行时
-回调可能来自不同工作线程）。
+`run_workflow(workflow, callback=None, collect_trace=False)` 返回 `RunResult`，
+定义无效时抛 `WorkflowDefinitionError`。回调可选，接收 `CallbackEvent`
+（独立任务并发执行时回调可能来自不同工作线程）。
+
+`collect_trace=True` 时 `RunResult.trace` 为本次运行的内存轨迹 `RunTrace`
+（不持久化）；为 False 时 `trace` 为 None，行为与此前完全一致。CLI 加
+`--trace`（如 `python -m floworch --trace workflow.json`）后 stdout 的 JSON
+额外包含 `trace` 字段；省略时输出与退出码不变。
+
+`RunTrace` 含 `started_at`、`finished_at`（UTC ISO 8601）、`events`、`attempts`：
+
+- `events` 按发出顺序保存与回调逐条一致的 `CallbackEvent`（`run_timed_out`
+  至多一次）；正常结束与超时收口均返回完整轨迹。
+- `attempts` 只记录 `task_started` 之后实际开始的尝试（`AttemptRecord`），
+  每项含 `task_id`、`attempt`、`started_at`、`finished_at`、
+  `duration_seconds`、`outcome`、`error`；跳过与未开始的任务不记，重试的
+  每次尝试独立记录，重试等待不计入 `duration_seconds`（非负有限，
+  `finished_at` 不早于 `started_at`）。
+- `outcome` 仅限 `success`、`task_failed`、`task_timeout`、`workflow_timeout`，
+  依次表示成功、普通失败或 fail_now 耗尽、任务级 `timeout_seconds` 截止
+  中断、工作流总时限中断在途尝试。`success` 的 `error` 为 null，其余
+  `error.code` 分别为 `BUILTIN_TASK_FAILED`、`TASK_TIMEOUT`、
+  `WORKFLOW_TIMEOUT` 并保留实际错误 `message`。
 
 ## 工作流定义
 
