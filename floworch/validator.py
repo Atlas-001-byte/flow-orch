@@ -18,10 +18,11 @@ def _is_real_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
-def build_tasks(data: Any) -> tuple[list[TaskDef], Optional[int]]:
-    """校验顶层工作流定义并返回 (有序 TaskDef 列表, max_concurrency)。
+def build_tasks(data: Any) -> tuple[list[TaskDef], Optional[int], Optional[float]]:
+    """校验顶层工作流定义并返回 (有序 TaskDef 列表, max_concurrency, run_timeout)。
 
-    max_concurrency 省略时为 None，表示不限制同时执行的任务数。
+    max_concurrency 省略时为 None，表示不限制同时执行的任务数；
+    run_timeout 省略时为 None，表示运行不限总时长。
     任何定义问题都抛 WorkflowDefinitionError，绝不产生其他异常类型。
     """
     if not isinstance(data, dict):
@@ -36,6 +37,7 @@ def build_tasks(data: Any) -> tuple[list[TaskDef], Optional[int]]:
         raise _err("INVALID_SCHEMA", "tasks 必须是数组")
 
     max_concurrency = _validate_concurrency_policy(data)
+    run_timeout = _validate_run_timeout_policy(data)
 
     tasks: list[TaskDef] = []
     seen_ids: set[str] = set()
@@ -88,7 +90,7 @@ def build_tasks(data: Any) -> tuple[list[TaskDef], Optional[int]]:
     _validate_no_cycle(tasks)
     _validate_task_args(tasks)
 
-    return tasks, max_concurrency
+    return tasks, max_concurrency, run_timeout
 
 
 def _validate_concurrency_policy(data: dict) -> Optional[int]:
@@ -110,6 +112,27 @@ def _validate_concurrency_policy(data: dict) -> Optional[int]:
             "max_concurrency 不能小于 1",
         )
     return value
+
+
+def _validate_run_timeout_policy(data: dict) -> Optional[float]:
+    """顶层 timeout_seconds 省略时为 None（运行不限时）；否则必须是 >= 0 的有限数值。
+
+    与任务级 timeout_seconds 同规则：布尔不算数值，NaN/inf 拒绝。
+    """
+    if "timeout_seconds" not in data:
+        return None
+    timeout = data["timeout_seconds"]
+    if not _is_real_number(timeout) or not math.isfinite(timeout):
+        raise _err(
+            "INVALID_RUN_TIMEOUT_POLICY",
+            "顶层 timeout_seconds 必须是有限数值",
+        )
+    if timeout < 0:
+        raise _err(
+            "INVALID_RUN_TIMEOUT_POLICY",
+            "顶层 timeout_seconds 不能小于 0",
+        )
+    return float(timeout)
 
 
 def _validate_depends_on(task_id: str, value: Any) -> list[str]:

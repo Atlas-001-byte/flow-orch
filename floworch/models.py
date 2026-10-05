@@ -51,10 +51,13 @@ class RunResult:
 class CallbackEvent:
     """回调事件。
 
-    event 为 task_started、task_retrying、task_succeeded、task_failed
-    或 task_skipped；timestamp 为 UTC ISO 8601 字符串。
+    event 为 task_started、task_retrying、task_succeeded、task_failed、
+    task_skipped 或 run_timed_out；timestamp 为 UTC ISO 8601 字符串。
     wait_seconds 仅 task_retrying 携带本次重试的实际等待秒数，
     其余事件均为 None。
+
+    run_timed_out 在工作流总时限到期时发出一次：task_id 为空字符串、
+    attempt 为 0、wait_seconds 为 None。
     """
 
     event: str
