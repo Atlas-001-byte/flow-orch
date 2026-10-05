@@ -71,6 +71,7 @@ def build_tasks(data: Any) -> tuple[list[TaskDef], Optional[int], Optional[float
         ) = _validate_retry_policy(task_id, raw)
         args = _validate_args_type(task_id, raw.get("args", {}))
         timeout_seconds = _validate_timeout_policy(task_id, raw)
+        priority = _validate_priority_policy(task_id, raw)
 
         tasks.append(
             TaskDef(
@@ -83,6 +84,7 @@ def build_tasks(data: Any) -> tuple[list[TaskDef], Optional[int], Optional[float
                 retry_backoff_multiplier=backoff_multiplier,
                 max_retry_delay_seconds=max_retry_delay,
                 timeout_seconds=timeout_seconds,
+                priority=priority,
             )
         )
 
@@ -222,6 +224,23 @@ def _validate_retry_policy(
 def _validate_args_type(task_id: str, value: Any) -> dict:
     if not isinstance(value, dict):
         raise _err("INVALID_ARGS", f"任务 {task_id} 的 args 必须是 JSON 对象")
+    return value
+
+
+def _validate_priority_policy(task_id: str, raw: dict) -> int:
+    """priority 省略时为 0；否则必须是 JSON 整数（布尔拒绝，浮点拒绝）。
+
+    不设取值区间：任何 JSON 整数（含负数）都合法，仅影响就绪候选的
+    启动先后，不改变其余执行语义。
+    """
+    if "priority" not in raw:
+        return 0
+    value = raw["priority"]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise _err(
+            "INVALID_PRIORITY_POLICY",
+            f"任务 {task_id} 的 priority 必须是整数",
+        )
     return value
 
 

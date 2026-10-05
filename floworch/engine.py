@@ -269,6 +269,22 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
 
     ready = [task.id for task in tasks if not task.depends_on]
     max_workers = max(1, len(tasks))
+
+    def pop_next_ready() -> str:
+        """取下一个应启动的就绪任务：priority 数值越大越优先。
+
+        priority 相同的任务保持既有相对启动顺序——ready 仍按原方式入列，
+        这里在最高优先级候选中取最靠后者，与历史的 ready.pop() 口径一致。
+        """
+        best_index = len(ready) - 1
+        best_priority = by_id[ready[best_index]].priority
+        for index in range(len(ready) - 2, -1, -1):
+            priority = by_id[ready[index]].priority
+            if priority > best_priority:
+                best_priority = priority
+                best_index = index
+        return ready.pop(best_index)
+
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures: dict[Any, str] = {}
 
@@ -303,7 +319,7 @@ def run_workflow(workflow: dict, callback: Optional[EventCallback] = None) -> Ru
                 while ready and (
                     max_concurrency is None or len(futures) < max_concurrency
                 ):
-                    submit(ready.pop())
+                    submit(pop_next_ready())
 
             # 跳过的任务可能在不经过线程池的情况下连锁放行下游。
             if not futures:
